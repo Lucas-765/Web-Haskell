@@ -1,4 +1,5 @@
 dist-*
+filmes.db
 dist-newstyle/
 studyhub.db
 chave.jwk
