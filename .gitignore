@@ -1,1 +1,5 @@
 dist-*
+dist-newstyle/
+studyhub.db
+chave.jwk
+dist-newstyle/

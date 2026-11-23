@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StudyHub</title>
+<style>
+  :root { --bg:#f6f6f4; --card:#fff; --txt:#1c1c1a; --mut:#6b6b66; --bd:#dcdcd6; --ac:#4f46e5; --red:#c0392b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161615; --card:#222220; --txt:#ececE8; --mut:#9a9a94; --bd:#3a3a36; --ac:#8b85ff; --red:#ef6b5b; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--txt); }
+  main { max-width:900px; margin:0 auto; padding:16px; }
+  header { display:flex; gap:8px; align-items:center; margin-bottom:16px; }
+  .esp { flex:1; }
+  h1,h2,h3 { margin:.3em 0; }
+  input, select, textarea, button { font:inherit; padding:8px 10px; border:1px solid var(--bd); border-radius:8px; background:var(--card); color:var(--txt); }
+  button { cursor:pointer; }
+  button.pri { background:var(--ac); color:#fff; border-color:var(--ac); }
+  button.perigo { color:var(--red); }
+  button:disabled { opacity:.5; cursor:default; }
+  label { display:block; margin-bottom:10px; font-size:.9rem; color:var(--mut); }
+  label input, label select, label textarea { display:block; width:100%; margin-top:4px; }
+  a { color:var(--ac); }
+  .caixa { max-width:460px; margin:24px auto; }
+  .barra { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+  .barra input { flex:1; min-width:140px; }
+  .grade { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px; }
+  .cartao, .item { background:var(--card); border:1px solid var(--bd); border-radius:12px; padding:14px; }
+  .item { margin-bottom:8px; }
+  .mut { color:var(--mut); font-size:.9rem; }
+  .tag { display:inline-block; background:var(--bg); border:1px solid var(--bd); border-radius:99px; padding:1px 10px; margin:0 4px 4px 0; font-size:.8rem; }
+  .abas { display:flex; gap:6px; margin:12px 0; flex-wrap:wrap; }
+  .abas button.ativa { background:var(--ac); color:#fff; border-color:var(--ac); }
+  .linha { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .pag { display:flex; justify-content:center; align-items:center; gap:12px; margin-top:16px; }
+  .erro { color:var(--red); min-height:1.2em; font-size:.9rem; margin-bottom:8px; }
+  .vazio { color:var(--mut); text-align:center; padding:24px 0; }
+</style>
+</head>
+<body>
+<main id="raiz"></main>
+
+<script>
+  let token = localStorage.getItem("token");
+  let eu = null;                                  // usuário logado
+  const raiz = document.getElementById("raiz");
+
+  // ---------- utilidades ----------
+  // Cria elementos. Textos entram como nós de texto (seguro contra XSS).
+  function h(tag, attrs = {}, ...filhos) {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k.startsWith("on")) e[k] = v; else e.setAttribute(k, v);
+    }
+    e.append(...filhos.flat().filter((c) => c != null && c !== false));
+    return e;
+  }
+  const tela = (...nos) => raiz.replaceChildren(...nos);
+
+  async function api(metodo, caminho, corpo) {
+    const cab = { "Content-Type": "application/json" };
+    if (token) cab.Authorization = "Bearer " + token;
+    const r = await fetch(caminho, { method: metodo, headers: cab, body: corpo ? JSON.stringify(corpo) : undefined });
+    if (r.status === 401 && token) { sair(); throw new Error("Sessão expirada. Entre novamente."); }
+    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    return r.status === 204 ? null : r.json();
+  }
+
+  // Monta um formulário a partir de uma lista de campos.
+  function formulario(campos, rotulo, enviar) {
+    const erro = h("div", { class: "erro" });
+    const campo = (c) => {
+      const a = { name: c.n };
+      if (c.req !== false) a.required = "";
+      let i;
+      if (c.opts) i = h("select", a, ...c.opts.map(([v, t]) => h("option", { value: v }, t)));
+      else if (c.t === "area") i = h("textarea", { ...a, rows: "3" });
+      else i = h("input", { ...a, type: c.t || "text" });
+      if (c.v !== undefined) i.value = c.v;
+      return h("label", {}, c.l, i);
+    };
+    const form = h("form", {
+      onsubmit: async (ev) => {
+        ev.preventDefault();
+        erro.textContent = "";
+        try { await enviar(Object.fromEntries(new FormData(form))); }
+        catch (e) { erro.textContent = e.message; }
+      },
+    }, ...campos.map(campo), erro, h("button", { class: "pri" }, rotulo));
+    return form;
+  }
+
+  function cabecalho() {
+    return h("header", {},
+      h("h2", { style: "cursor:pointer", onclick: () => telaGrupos() }, "📚 StudyHub"),
+      h("span", { class: "esp" }),
+      h("button", { onclick: telaPerfil }, eu.nome),
+      h("button", { onclick: sair }, "Sair"));
+  }
+
+  function sair() {
+    token = null; eu = null;
+    localStorage.removeItem("token");
+    telaAuth();
+  }
+
+  // ---------- fase 1: login e cadastro ----------
+  function telaAuth(modo = "login") {
+    const l = (n, rot, t) => ({ n, l: rot, t });
+    const campos = modo === "login"
+      ? [l("email", "Email", "email"), l("senha", "Senha", "password")]
+      : [l("nome", "Nome"), l("email", "Email", "email"), l("senha", "Senha (mínimo 8 caracteres)", "password"),
+         { n: "instituicao", l: "Instituição", req: false }, { n: "curso", l: "Curso", req: false },
+         { n: "semestre", l: "Semestre", t: "number", v: 1 }];
+
+    const form = formulario(campos, modo === "login" ? "Entrar" : "Criar conta", async (d) => {
+      if (modo === "cadastro") {
+        d.semestre = Number(d.semestre) || 1;
+        await api("POST", "/cadastro", d);
+      }
+      const r = await api("POST", "/login", { email: d.email, senha: d.senha });
+      token = r.token;
+      localStorage.setItem("token", token);
+      await entrar();
+    });
+
+    tela(h("div", { class: "caixa" },
+      h("h1", {}, "📚 StudyHub"),
+      h("p", { class: "mut" }, "Encontre e organize grupos de estudo."),
+      form,
+      h("p", {}, h("a", { href: "#", onclick: (e) => { e.preventDefault(); telaAuth(modo === "login" ? "cadastro" : "login"); } },
+        modo === "login" ? "Não tenho conta" : "Já tenho conta"))));
+  }
+
+  async function entrar() {
+    try { eu = await api("GET", "/perfil"); telaGrupos(); }
+    catch { token = null; localStorage.removeItem("token"); telaAuth(); }
+  }
+
+  // ---------- fase 2: perfil ----------
+  function telaPerfil() {
+    tela(cabecalho(), h("div", { class: "caixa" }, h("h2", {}, "Meu perfil"),
+      formulario([
+        { n: "nome", l: "Nome", v: eu.nome },
+        { n: "instituicao", l: "Instituição", v: eu.instituicao, req: false },
+        { n: "curso", l: "Curso", v: eu.curso, req: false },
+        { n: "semestre", l: "Semestre", t: "number", v: eu.semestre },
+        { n: "bio", l: "Sobre você", t: "area", v: eu.bio, req: false },
+      ], "Salvar", async (d) => {
+        d.semestre = Number(d.semestre) || 0;
+        eu = await api("PUT", "/perfil", d);
+        telaGrupos();
+      })));
+  }
+
+  // ---------- fase 2: busca de grupos ----------
+  async function telaGrupos() {
+    let p = 1, t;
+    const agendar = () => { clearTimeout(t); t = setTimeout(() => { p = 1; carregar(); }, 300); };
+    const busca = h("input", { placeholder: "Buscar por título ou descrição", oninput: agendar });
+    const tag = h("input", { placeholder: "Tag (ex.: calculo)", oninput: agendar });
+    const inst = h("input", { placeholder: "Instituição", oninput: agendar });
+    const mod = h("select", { onchange: () => { p = 1; carregar(); } },
+      ...[["", "Qualquer modalidade"], ["online", "Online"], ["presencial", "Presencial"], ["hibrido", "Híbrido"]]
+        .map(([v, r]) => h("option", { value: v }, r)));
+    const lista = h("div", { class: "grade" });
+    const ant = h("button", { onclick: () => { p--; carregar(); } }, "← Anterior");
+    const prox = h("button", { onclick: () => { p++; carregar(); } }, "Próxima →");
+    const rotuloPag = h("span", {});
+
+    const cartao = (g) => h("div", { class: "cartao" },
+      h("h3", {}, g.titulo),
+      h("div", { class: "mut" }, `${g.instituicao} · ${g.modalidade} · ${g.membros} membro(s) · ${g.entrada === "aberto" ? "entrada livre" : "com aprovação"}`),
+      h("p", {}, g.descricao),
+      h("div", {}, ...g.tags.split(",").filter(Boolean).map((x) => h("span", { class: "tag" }, x))),
+      h("button", { class: "pri", onclick: () => telaGrupo(g.id) }, "Abrir"));
+
+    async function carregar() {
+      const q = new URLSearchParams({ pagina: p, limite: 6 });
+      for (const [k, v] of [["busca", busca.value], ["tag", tag.value], ["instituicao", inst.value], ["modalidade", mod.value]])
+        if (v.trim()) q.set(k, v.trim());
+      try {
+        const gs = await api("GET", "/grupos?" + q);
+        lista.replaceChildren(...(gs.length ? gs.map(cartao) : [h("p", { class: "vazio" }, "Nenhum grupo encontrado.")]));
+        rotuloPag.textContent = "Página " + p;
+        ant.disabled = p === 1;
+        prox.disabled = gs.length < 6;
+      } catch (e) { lista.textContent = e.message; }
+    }
+
+    tela(cabecalho(),
+      h("div", { class: "barra" }, busca, tag, inst, mod,
+        h("button", { class: "pri", onclick: telaNovoGrupo }, "+ Novo grupo")),
+      lista, h("div", { class: "pag" }, ant, rotuloPag, prox));
+    carregar();
+  }
+
+  function telaNovoGrupo() {
+    tela(cabecalho(), h("div", { class: "caixa" }, h("h2", {}, "Novo grupo"),
+      formulario([
+        { n: "titulo", l: "Título" },
+        { n: "descricao", l: "Descrição", t: "area" },
+        { n: "instituicao", l: "Instituição", v: eu.instituicao },
+        { n: "modalidade", l: "Modalidade", opts: [["online", "Online"], ["presencial", "Presencial"], ["hibrido", "Híbrido"]] },
+        { n: "tags", l: "Tags (separadas por vírgula)", req: false },
+        { n: "link", l: "Link do grupo (WhatsApp, Discord...). Só membros veem.", req: false },
+        { n: "entrada", l: "Entrada", opts: [["aberto", "Livre"], ["fechado", "Com aprovação do dono"]] },
+      ], "Criar grupo", async (d) => { const g = await api("POST", "/grupos", d); telaGrupo(g.id); }),
+      h("p", {}, h("button", { onclick: () => telaGrupos() }, "Voltar"))));
+  }
+
+  // ---------- fases 3, 4 e 5: página do grupo ----------
+  async function telaGrupo(id, aba = "membros") {
+    let g, membros = null;
+    try { g = await api("GET", "/grupos/" + id); }
+    catch (e) { tela(cabecalho(), h("p", { class: "erro" }, e.message)); return; }
+    try { membros = await api("GET", `/grupos/${id}/membros`); } catch { membros = null; }
+
+    const meu = membros && membros.find((m) => m.usuarioId === eu.id);
+    const ativo = !!meu && meu.status === "ativo";
+    const gestor = ativo && ["dono", "moderador"].includes(meu.papel);
+    const rec = () => telaGrupo(id, aba);
+    const botao = (rotulo, fn, cls = "") => h("button", {
+      class: cls,
+      onclick: async () => { try { await fn(); rec(); } catch (e) { alert(e.message); } },
+    }, rotulo);
+
+    // --- abas ---
+    function abaMembros() {
+      return h("div", {}, ...membros.map((m) => h("div", { class: "item linha" },
+        h("span", { class: "esp" }, `${m.nome} · ${m.papel}${m.status === "pendente" ? " (aguardando aprovação)" : ""}`),
+        gestor && m.status === "pendente" && botao("Aprovar", () => api("PUT", `/grupos/${id}/membros/${m.usuarioId}`, { papel: "membro", status: "ativo" }), "pri"),
+        meu.papel === "dono" && m.status === "ativo" && m.papel !== "dono" &&
+          botao(m.papel === "moderador" ? "Tornar membro" : "Tornar moderador",
+            () => api("PUT", `/grupos/${id}/membros/${m.usuarioId}`, { papel: m.papel === "moderador" ? "membro" : "moderador", status: "ativo" })),
+        gestor && m.usuarioId !== eu.id && m.papel !== "dono" &&
+          botao("Remover", () => api("DELETE", `/grupos/${id}/membros/${m.usuarioId}`), "perigo"))));
+    }
+
+    async function abaEncontros() {
+      const es = await api("GET", `/grupos/${id}/encontros`);
+      return h("div", {},
+        gestor && formulario([
+          { n: "titulo", l: "Título do encontro" },
+          { n: "dataHora", l: "Data e hora", t: "datetime-local" },
+          { n: "local", l: "Local ou link" },
+          { n: "vagas", l: "Vagas (0 = sem limite)", t: "number", v: 0 },
+        ], "Agendar encontro", async (d) => {
+          await api("POST", `/grupos/${id}/encontros`, { ...d, vagas: Number(d.vagas) || 0 });
+          rec();
+        }),
+        ...(es.length ? es : [null]).map((e) => e ? h("div", { class: "item" },
+          h("strong", {}, e.titulo),
+          h("div", { class: "mut" }, `${e.dataHora.replace("T", " ")} · ${e.local} · ${e.confirmados}${e.vagas ? "/" + e.vagas : ""} confirmado(s)`),
+          h("div", { class: "linha" },
+            botao("Vou", () => api("POST", `/encontros/${e.id}/presenca`), "pri"),
+            botao("Cancelar presença", () => api("DELETE", `/encontros/${e.id}/presenca`)))) : h("p", { class: "vazio" }, "Nenhum encontro agendado.")));
+    }
+
+    async function abaMateriais() {
+      const ms = await api("GET", `/grupos/${id}/materiais`);
+      return h("div", {},
+        formulario([{ n: "titulo", l: "Título do material" }, { n: "url", l: "Link (https://...)", t: "url" }],
+          "Compartilhar", async (d) => { await api("POST", `/grupos/${id}/materiais`, d); rec(); }),
+        ...(ms.length ? ms : [null]).map((m) => m ? h("div", { class: "item" },
+          h("a", { href: m.url, target: "_blank", rel: "noopener noreferrer" }, m.titulo),
+          h("div", { class: "mut" }, `${m.autor} · ${m.criadoEm}`)) : h("p", { class: "vazio" }, "Nenhum material ainda.")));
+    }
+
+    async function abaAvisos() {
+      const as = await api("GET", `/grupos/${id}/avisos`);
+      return h("div", {},
+        gestor && formulario([{ n: "texto", l: "Novo aviso", t: "area" }], "Publicar",
+          async (d) => { await api("POST", `/grupos/${id}/avisos`, d); rec(); }),
+        ...(as.length ? as : [null]).map((a) => a ? h("div", { class: "item" },
+          h("div", {}, a.texto),
+          h("div", { class: "mut" }, `${a.autor} · ${a.criadoEm}`)) : h("p", { class: "vazio" }, "Nenhum aviso.")));
+    }
+
+    // --- conteúdo da página ---
+    let conteudo = h("p", { class: "mut" }, "Entre no grupo para ver membros, encontros, materiais e avisos.");
+    if (ativo) {
+      try {
+        const f = { membros: abaMembros, encontros: abaEncontros, materiais: abaMateriais, avisos: abaAvisos }[aba];
+        conteudo = await f();
+      } catch (e) { conteudo = h("p", { class: "erro" }, e.message); }
+    }
+
+    tela(cabecalho(),
+      h("button", { onclick: () => telaGrupos() }, "← Grupos"),
+      h("h2", {}, g.titulo),
+      h("div", { class: "mut" }, `${g.instituicao} · ${g.modalidade} · ${g.membros} membro(s) · ${g.entrada === "aberto" ? "entrada livre" : "com aprovação"}`),
+      h("p", {}, g.descricao),
+      h("div", {}, ...g.tags.split(",").filter(Boolean).map((x) => h("span", { class: "tag" }, x))),
+      ativo && g.link && h("p", {}, "Conversa do grupo: ", h("a", { href: g.link, target: "_blank", rel: "noopener noreferrer" }, g.link)),
+      h("div", { class: "linha" },
+        !ativo && h("button", { class: "pri", onclick: async () => {
+          try {
+            const r = await api("POST", `/grupos/${id}/entrar`);
+            alert(r.status === "ativo" ? "Você entrou no grupo!" : "Solicitação enviada. Aguarde a aprovação.");
+            rec();
+          } catch (e) { alert(e.message); }
+        } }, "Entrar no grupo"),
+        ativo && meu.papel !== "dono" && botao("Sair do grupo", async () => {
+          if (!confirm("Sair deste grupo?")) throw new Error("Cancelado");
+          await api("DELETE", `/grupos/${id}/membros/${eu.id}`);
+          telaGrupos();
+        }, "perigo"),
+        ativo && meu.papel === "dono" && h("button", { class: "perigo", onclick: async () => {
+          if (!confirm("Excluir o grupo e tudo dentro dele?")) return;
+          try { await api("DELETE", "/grupos/" + id); telaGrupos(); } catch (e) { alert(e.message); }
+        } }, "Excluir grupo")),
+      ativo && h("div", { class: "abas" }, ...["membros", "encontros", "materiais", "avisos"].map((a) =>
+        h("button", { class: a === aba ? "ativa" : "", onclick: () => telaGrupo(id, a) }, a[0].toUpperCase() + a.slice(1)))),
+      conteudo);
+  }
+
+  // ---------- início ----------
+  if (token) entrar(); else telaAuth();
+</script>
+</body>
+</html>
